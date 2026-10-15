@@ -76,7 +76,7 @@ def aguardar_estado_menu(timeout=30):
         if encontrar_janela_por_titulo(TITULO_MENU) is not None:
             return True
 
-        time.sleep(INTERVALO_VERIFICACAO)
+        time.sleep(.1)
 
     return False
 
@@ -187,36 +187,37 @@ def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
     print(f"Pesquisando servidor: {nome}")
     pyperclip.copy(nome)
     pyautogui.hotkey("ctrl", "v")
-    time.sleep(INTERVALO)
+    time.sleep(.05)
 
     print("Pressionando primeiro Enter...")
     pyautogui.press("enter")
-    time.sleep(INTERVALO)
+    time.sleep(.05)
 
     print("Pressionando segundo Enter...")
     pyautogui.press("enter")
+    time.sleep(.5)
 
     print("Abrindo janela de Licenças...")
     pyautogui.click(X_LICENCAS, Y_LICENCAS)
     pyautogui.click(X_LICENCAS, Y_LICENCAS)
-    time.sleep(1)
+    time.sleep(.5)
 
     print("Executando próximo clique...")
     pyautogui.click(X_PROXIMA_ACAO, Y_PROXIMA_ACAO)
     pyautogui.click(X_PROXIMA_ACAO, Y_PROXIMA_ACAO)
-    time.sleep(1)
+    time.sleep(.05)
 
     print("Clique para abrir Licenças realizado.")
 
     obter_licencas(nome, caminho_planilha)
     
-    time.sleep(1)
+    time.sleep(.5)
 
     print(f"Sequência concluída para: {nome}")
     print(f"Voltando ao menu")
     pyautogui.hotkey("esc")
     
-    time.sleep(1)
+    time.sleep(.5)
 
     return True
 
@@ -232,8 +233,12 @@ def obter_licencas(nome_servidor, caminho_saida):
     hwnd = encontrar_janela_por_titulo(titulo)
 
     if not hwnd:
-        print("Janela de Licenças não encontrada.")
-        return
+        print("Janela de Licenças não encontrada. (1/2)")
+        time.sleep(.5)
+        hwnd = encontrar_janela_por_titulo(titulo)
+        if not hwnd:
+            print("Janela de Licenças não encontrada. (2/2)")
+            return
 
     print(f"\nObtendo licenças de: {nome_servidor}")
 
@@ -251,7 +256,7 @@ def obter_licencas(nome_servidor, caminho_saida):
         time.sleep(0.1)
 
         pyautogui.hotkey("ctrl", "c")
-        time.sleep(0.5)
+        time.sleep(0.05)
 
         atual = pyperclip.paste()
 
@@ -269,7 +274,7 @@ def obter_licencas(nome_servidor, caminho_saida):
         print(f"Registro {len(registros)} capturado.")
 
         pyautogui.press("down")
-        time.sleep(0.3)
+        time.sleep(0.01)
 
     if not registros:
         print("Nenhuma licença foi encontrada.")
@@ -280,34 +285,50 @@ def obter_licencas(nome_servidor, caminho_saida):
     try:
         planilha = workbook["Licenças"]
 
+        contador = sum(
+            1
+            for linha in planilha.iter_rows(
+                min_row=2,
+                min_col=1,
+                max_col=1,
+                values_only=True,
+            )
+            if linha[0] == nome_servidor
+        )
+
         for registro in registros:
+            dados = interpretar_licenca(registro)
+
+            if dados is None:
+                continue
+
+            contador += 1
+
             planilha.append([
                 nome_servidor,
-                len([
-                    1 for linha in planilha.iter_rows(
-                        min_row=2,
-                        min_col=1,
-                        max_col=1,
-                        values_only=True,
-                    )
-                    if linha[0] == nome_servidor
-                ]) + 1,
-                registro,
+                dados["tipo"],
+                datetime.strptime(
+                    dados["data_inicio"], "%d/%m/%Y"
+                ).date(),
+                datetime.strptime(
+                    dados["data_fim"], "%d/%m/%Y"
+                ).date(),
             ])
 
             linha = planilha.max_row
 
-            planilha.cell(linha, 1).alignment = Alignment(
-                vertical="top"
-            )
-            planilha.cell(linha, 2).alignment = Alignment(
-                horizontal="center",
-                vertical="top",
-            )
-            planilha.cell(linha, 3).alignment = Alignment(
-                vertical="top",
-                wrap_text=True,
-            )
+            for coluna in range(1, 5):
+                planilha.cell(linha, coluna).alignment = Alignment(
+                    vertical="top",
+                    wrap_text=(coluna == 2),
+                )
+
+            for coluna in (3, 4):
+                planilha.cell(linha, coluna).number_format = "dd/mm/yyyy"
+                planilha.cell(linha, coluna).alignment = Alignment(
+                    horizontal="center",
+                    vertical="top",
+                )
 
         planilha.auto_filter.ref = planilha.dimensions
 
@@ -323,7 +344,9 @@ def obter_licencas(nome_servidor, caminho_saida):
 
 
 def criar_planilha_licencas(caminho_planilha):
-    caminho_saida = Path(caminho_planilha).resolve().parent / "Licencas.xlsx"
+    caminho_saida = (
+        Path(caminho_planilha).resolve().parent / "Licencas.xlsx"
+    )
 
     workbook = Workbook()
     planilha = workbook.active
@@ -331,8 +354,9 @@ def criar_planilha_licencas(caminho_planilha):
 
     planilha.append([
         "Servidor",
-        "Nº do Registro",
-        "Dados da Licença",
+        "Tipo Licença",
+        "Data Início",
+        "Data Fim",
     ])
 
     for celula in planilha[1]:
@@ -350,11 +374,12 @@ def criar_planilha_licencas(caminho_planilha):
         )
 
     planilha.freeze_panes = "A2"
-    planilha.auto_filter.ref = "A1:C1"
+    planilha.auto_filter.ref = "A1:D1"
 
     planilha.column_dimensions["A"].width = 35
-    planilha.column_dimensions["B"].width = 16
-    planilha.column_dimensions["C"].width = 100
+    planilha.column_dimensions["B"].width = 65
+    planilha.column_dimensions["C"].width = 16
+    planilha.column_dimensions["D"].width = 16
 
     workbook.save(caminho_saida)
     workbook.close()
@@ -362,6 +387,76 @@ def criar_planilha_licencas(caminho_planilha):
     print(f"Planilha de saída criada: {caminho_saida}")
 
     return caminho_saida
+
+import re
+
+
+def interpretar_licenca(texto):
+    """
+    Interpreta o texto copiado da grade de licenças.
+
+    Retorna os campos separados ou None se não conseguir
+    identificar um registro válido.
+    """
+
+    texto = texto.replace("\r", "\n")
+
+    # Separa o conteúdo por tabulações e remove espaços extras.
+    campos = [
+        re.sub(r"\s+", " ", campo).strip()
+        for campo in re.split(r"[\t\n]+", texto)
+        if campo.strip()
+    ]
+
+    # Remove os cabeçalhos da grade.
+    cabecalhos = {
+        "tipo licença",
+        "data início",
+        "data fim",
+    }
+
+    campos = [
+        re.sub(r"\s+", " ", campo).strip()
+        for campo in re.split(r"[\t\n]+", texto)
+        if campo.strip()
+    ]
+
+    # Procura a sequência:
+    # Controle | Tipo | Data inicial | Data final |
+    # Dias afastado | Data de retorno
+    for i in range(len(campos) - 5):
+        controle = campos[i]
+        tipo = campos[i + 1]
+        data_inicio = campos[i + 2]
+        data_fim = campos[i + 3]
+        dias = campos[i + 4]
+        data_retorno = campos[i + 5]
+
+        if not controle.isdigit():
+            continue
+
+        formato_data = re.compile(r"\d{2}/\d{2}/\d{4}")
+
+        if not all(
+            formato_data.fullmatch(data)
+            for data in (data_inicio, data_fim, data_retorno)
+        ):
+            continue
+
+        if not dias.isdigit():
+            continue
+
+        return {
+            "controle": int(controle),
+            "tipo": tipo,
+            "data_inicio": data_inicio,
+            "data_fim": data_fim,
+            "dias": int(dias),
+            "data_retorno": data_retorno,
+        }
+
+    print(f"Não foi possível interpretar o registro: {texto!r}")
+    return None
 
 # ============================================================
 # PROGRAMA PRINCIPAL
