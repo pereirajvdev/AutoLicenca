@@ -5,8 +5,11 @@ from pathlib import Path
 import pyautogui
 import pyperclip
 import win32gui
-from pywinauto import Desktop
-from openpyxl import load_workbook
+
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+from datetime import datetime
 
 
 # ============================================================
@@ -151,7 +154,7 @@ def ler_servidores(caminho_planilha):
 # PESQUISA DO SERVIDOR
 # ============================================================
 
-def pesquisar_servidor(nome, numero_linha=None):
+def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
     print(f"\nPesquisando servidor: {nome}")
     """
     Executa a sequência inicial:
@@ -202,19 +205,19 @@ def pesquisar_servidor(nome, numero_linha=None):
 
     print("Clique para abrir Licenças realizado.")
 
-    obter_licencas()
+    obter_licencas(nome, caminho_planilha)
     
-    input("Continuar")
+    time.sleep(1)
 
     print(f"Sequência concluída para: {nome}")
 
     return True
 
 
-def obter_licencas():
+def obter_licencas(nome_servidor, caminho_planilha):
     """
-    Lê as licenças da grade, avançando linha a linha,
-    até encontrar uma cópia igual à anterior.
+    Lê os registros da grade até encontrar duas cópias
+    consecutivas iguais e salva o resultado em Excel.
     """
     titulo = "Licenças / Afastamentos / Exames"
     limite_tentativas = 100
@@ -225,16 +228,15 @@ def obter_licencas():
         print("Janela de Licenças não encontrada.")
         return
 
-    print("\nObtendo licenças...")
+    print(f"\nObtendo licenças de: {nome_servidor}")
 
     win32gui.SetForegroundWindow(hwnd)
     time.sleep(0.5)
 
-    # Seleciona a grade
     pyautogui.click(800, 460)
     time.sleep(0.3)
 
-    licencas = []
+    registros = []
     anterior = None
 
     for tentativa in range(1, limite_tentativas + 1):
@@ -250,27 +252,91 @@ def obter_licencas():
             print("Nenhum texto foi copiado.")
             break
 
-        # Encerra quando a cópia se repetir
+        # Encerra quando o conteúdo se repetir.
         if anterior is not None and atual == anterior:
             print("Fim da leitura: conteúdo repetido.")
             break
 
-        licencas.append(atual.strip())
+        registros.append(atual.strip())
         anterior = atual
+
+        print(f"Registro {len(registros)} capturado.")
 
         pyautogui.press("down")
         time.sleep(0.3)
 
-    print("\n" + "=" * 70)
-    print("LICENÇAS ENCONTRADAS")
-    print("=" * 70)
+    if not registros:
+        print("Nenhuma licença foi encontrada.")
+        return
 
-    for indice, licenca in enumerate(licencas, start=1):
-        print(f"\nLicença {indice}")
-        print("-" * 40)
-        print(licenca)
+    # Salva o Excel na mesma pasta da planilha de entrada.
+    caminho_planilha = Path(caminho_planilha).resolve()
 
-    print(f"\nTotal de registros: {len(licencas)}")
+    nome_arquivo = (
+        f"Licencas_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    )
+
+    caminho_saida = caminho_planilha.parent / nome_arquivo
+
+    workbook = Workbook()
+    planilha = workbook.active
+    planilha.title = "Licenças"
+
+    # Cabeçalho.
+    planilha.append(["Servidor", "Nº do Registro", "Dados da Licença"])
+
+    for celula in planilha[1]:
+        celula.fill = PatternFill(
+            fill_type="solid",
+            fgColor="4472C4",
+        )
+        celula.font = Font(
+            bold=True,
+            color="FFFFFF",
+        )
+        celula.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+        )
+
+    # Mantém cada registro integral em sua própria linha.
+    for indice, registro in enumerate(registros, start=1):
+        planilha.append([
+            nome_servidor,
+            indice,
+            registro,
+        ])
+
+    planilha.freeze_panes = "A2"
+    planilha.auto_filter.ref = planilha.dimensions
+
+    larguras = {
+        "A": 35,
+        "B": 16,
+        "C": 100,
+    }
+
+    for coluna, largura in larguras.items():
+        planilha.column_dimensions[coluna].width = largura
+
+    for linha in planilha.iter_rows(min_row=2):
+        linha[0].alignment = Alignment(vertical="top")
+        linha[1].alignment = Alignment(
+            horizontal="center",
+            vertical="top",
+        )
+        linha[2].alignment = Alignment(
+            vertical="top",
+            wrap_text=True,
+        )
+
+    workbook.save(caminho_saida)
+    workbook.close()
+
+    print("\nExcel criado com sucesso.")
+    print(f"Servidor: {nome_servidor}")
+    print(f"Registros: {len(registros)}")
+    print(f"Arquivo: {caminho_saida.resolve()}")
 
         
 # ============================================================
@@ -308,7 +374,11 @@ def main():
 
     for nome in servidores:
         try:
-            pesquisar_servidor(nome, 0)
+            pesquisar_servidor(
+                nome,
+                0,
+                args.planilha,
+            )
             time.sleep(0.5)
 
         except KeyboardInterrupt:
