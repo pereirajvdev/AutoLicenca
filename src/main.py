@@ -221,10 +221,10 @@ def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
     return True
 
 
-def obter_licencas(nome_servidor, caminho_planilha):
+def obter_licencas(nome_servidor, caminho_saida):
     """
-    Lê os registros da grade até encontrar duas cópias
-    consecutivas iguais e salva o resultado em Excel.
+    Lê os registros da grade e acrescenta as licenças
+    ao Excel consolidado.
     """
     titulo = "Licenças / Afastamentos / Exames"
     limite_tentativas = 100
@@ -259,7 +259,6 @@ def obter_licencas(nome_servidor, caminho_planilha):
             print("Nenhum texto foi copiado.")
             break
 
-        # Encerra quando o conteúdo se repetir.
         if anterior is not None and atual == anterior:
             print("Fim da leitura: conteúdo repetido.")
             break
@@ -276,21 +275,65 @@ def obter_licencas(nome_servidor, caminho_planilha):
         print("Nenhuma licença foi encontrada.")
         return
 
-    # Salva o Excel na mesma pasta da planilha de entrada.
-    caminho_planilha = Path(caminho_planilha).resolve()
+    workbook = load_workbook(caminho_saida)
 
-    nome_arquivo = (
-        f"Licencas_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-    )
+    try:
+        planilha = workbook["Licenças"]
 
-    caminho_saida = caminho_planilha.parent / nome_arquivo
+        for registro in registros:
+            planilha.append([
+                nome_servidor,
+                len([
+                    1 for linha in planilha.iter_rows(
+                        min_row=2,
+                        min_col=1,
+                        max_col=1,
+                        values_only=True,
+                    )
+                    if linha[0] == nome_servidor
+                ]) + 1,
+                registro,
+            ])
+
+            linha = planilha.max_row
+
+            planilha.cell(linha, 1).alignment = Alignment(
+                vertical="top"
+            )
+            planilha.cell(linha, 2).alignment = Alignment(
+                horizontal="center",
+                vertical="top",
+            )
+            planilha.cell(linha, 3).alignment = Alignment(
+                vertical="top",
+                wrap_text=True,
+            )
+
+        planilha.auto_filter.ref = planilha.dimensions
+
+        workbook.save(caminho_saida)
+
+    finally:
+        workbook.close()
+
+    print("\nLicenças adicionadas ao Excel.")
+    print(f"Servidor: {nome_servidor}")
+    print(f"Registros adicionados: {len(registros)}")
+    print(f"Arquivo: {Path(caminho_saida).resolve()}")
+
+
+def criar_planilha_licencas(caminho_planilha):
+    caminho_saida = Path(caminho_planilha).resolve().parent / "Licencas.xlsx"
 
     workbook = Workbook()
     planilha = workbook.active
     planilha.title = "Licenças"
 
-    # Cabeçalho.
-    planilha.append(["Servidor", "Nº do Registro", "Dados da Licença"])
+    planilha.append([
+        "Servidor",
+        "Nº do Registro",
+        "Dados da Licença",
+    ])
 
     for celula in planilha[1]:
         celula.fill = PatternFill(
@@ -306,46 +349,20 @@ def obter_licencas(nome_servidor, caminho_planilha):
             vertical="center",
         )
 
-    # Mantém cada registro integral em sua própria linha.
-    for indice, registro in enumerate(registros, start=1):
-        planilha.append([
-            nome_servidor,
-            indice,
-            registro,
-        ])
-
     planilha.freeze_panes = "A2"
-    planilha.auto_filter.ref = planilha.dimensions
+    planilha.auto_filter.ref = "A1:C1"
 
-    larguras = {
-        "A": 35,
-        "B": 16,
-        "C": 100,
-    }
-
-    for coluna, largura in larguras.items():
-        planilha.column_dimensions[coluna].width = largura
-
-    for linha in planilha.iter_rows(min_row=2):
-        linha[0].alignment = Alignment(vertical="top")
-        linha[1].alignment = Alignment(
-            horizontal="center",
-            vertical="top",
-        )
-        linha[2].alignment = Alignment(
-            vertical="top",
-            wrap_text=True,
-        )
+    planilha.column_dimensions["A"].width = 35
+    planilha.column_dimensions["B"].width = 16
+    planilha.column_dimensions["C"].width = 100
 
     workbook.save(caminho_saida)
     workbook.close()
 
-    print("\nExcel criado com sucesso.")
-    print(f"Servidor: {nome_servidor}")
-    print(f"Registros: {len(registros)}")
-    print(f"Arquivo: {caminho_saida.resolve()}")
+    print(f"Planilha de saída criada: {caminho_saida}")
 
-        
+    return caminho_saida
+
 # ============================================================
 # PROGRAMA PRINCIPAL
 # ============================================================
@@ -379,12 +396,19 @@ def main():
 
     print(f"Total de servidores encontrados: {len(servidores)}")
 
-    for nome in servidores:
+    caminho_saida = (
+        args.planilha.resolve().parent / "Licencas.xlsx"
+    )
+
+    # Cria um único arquivo para todo o processamento.
+    criar_planilha_licencas(args.planilha)
+
+    for indice, nome in enumerate(servidores, start=1):
         try:
             pesquisar_servidor(
                 nome,
-                0,
-                args.planilha,
+                indice,
+                caminho_saida,
             )
             time.sleep(0.5)
 
@@ -394,8 +418,6 @@ def main():
 
         except Exception as erro:
             print(f"Erro ao processar {nome}: {erro}")
-
-    print("\nProcessamento finalizado.")
 
 
 if __name__ == "__main__":
