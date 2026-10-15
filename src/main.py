@@ -181,6 +181,7 @@ def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
 
     print("Clicando na posição inicial...")
     pyautogui.click(X_INICIAL, Y_INICIAL)
+    pyautogui.click(X_INICIAL, Y_INICIAL)
     time.sleep(INTERVALO)
 
     print(f"Pesquisando servidor: {nome}")
@@ -197,11 +198,13 @@ def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
 
     print("Abrindo janela de Licenças...")
     pyautogui.click(X_LICENCAS, Y_LICENCAS)
-    time.sleep(INTERVALO)
+    pyautogui.click(X_LICENCAS, Y_LICENCAS)
+    time.sleep(1)
 
     print("Executando próximo clique...")
     pyautogui.click(X_PROXIMA_ACAO, Y_PROXIMA_ACAO)
-    time.sleep(INTERVALO)
+    pyautogui.click(X_PROXIMA_ACAO, Y_PROXIMA_ACAO)
+    time.sleep(1)
 
     print("Clique para abrir Licenças realizado.")
 
@@ -210,6 +213,10 @@ def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
     time.sleep(1)
 
     print(f"Sequência concluída para: {nome}")
+    print(f"Voltando ao menu")
+    pyautogui.hotkey("esc")
+    
+    time.sleep(1)
 
     return True
 
