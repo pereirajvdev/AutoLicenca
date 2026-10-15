@@ -18,6 +18,12 @@ TITULO_MENU = "Menu: Arquivos / Cadastro de Funcionários"
 X_INICIAL = 583
 Y_INICIAL = 841
 
+X_LICENCAS = 667
+Y_LICENCAS = 495
+
+X_PROXIMA_ACAO = 898
+Y_PROXIMA_ACAO = 419
+
 INTERVALO = 0.3
 INTERVALO_VERIFICACAO = 0.5
 
@@ -186,9 +192,60 @@ def pesquisar_servidor(nome, numero_linha=None):
     print("Pressionando segundo Enter...")
     pyautogui.press("enter")
 
+    print("Abrindo janela de Licenças...")
+    pyautogui.click(X_LICENCAS, Y_LICENCAS)
+    time.sleep(INTERVALO)
+
+    print("Executando próximo clique...")
+    pyautogui.click(X_PROXIMA_ACAO, Y_PROXIMA_ACAO)
+    time.sleep(INTERVALO)
+
+    print("Clique para abrir Licenças realizado.")
+
+    diagnosticar_tabela_licencas()
+    
+    input("Continuar")
+
     print(f"Sequência concluída para: {nome}")
 
     return True
+
+
+def diagnosticar_tabela_licencas():
+    """
+    Inspeciona os controles da janela de Licenças / Afastamentos.
+    """
+    titulo = "Licenças / Afastamentos / Exames"
+
+    janela = Desktop(backend="win32").window(
+        title_re=f".*{titulo}.*"
+    )
+
+    if not janela.exists(timeout=5):
+        print("Janela de Licenças não encontrada.")
+        return
+
+    print(f"Janela encontrada: {janela.window_text()}")
+    print("\nCONTROLES DA JANELA")
+    print("-" * 70)
+
+    for indice, controle in enumerate(janela.descendants()):
+        try:
+            classe = controle.class_name()
+            texto = controle.window_text().strip()
+            rect = controle.rectangle()
+
+            print(
+                f"[{indice}] "
+                f"Classe={classe!r} | "
+                f"Texto={texto!r} | "
+                f"Handle={controle.handle} | "
+                f"Rect=({rect.left}, {rect.top}, "
+                f"{rect.right}, {rect.bottom})"
+            )
+
+        except Exception as erro:
+            print(f"[{indice}] Erro ao ler controle: {erro}")
 
 
 # ============================================================
