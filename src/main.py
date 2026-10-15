@@ -202,7 +202,7 @@ def pesquisar_servidor(nome, numero_linha=None):
 
     print("Clique para abrir Licenças realizado.")
 
-    diagnosticar_tabela_licencas()
+    obter_licencas()
     
     input("Continuar")
 
@@ -211,43 +211,68 @@ def pesquisar_servidor(nome, numero_linha=None):
     return True
 
 
-def diagnosticar_tabela_licencas():
+def obter_licencas():
     """
-    Inspeciona os controles da janela de Licenças / Afastamentos.
+    Lê as licenças da grade, avançando linha a linha,
+    até encontrar uma cópia igual à anterior.
     """
     titulo = "Licenças / Afastamentos / Exames"
+    limite_tentativas = 100
 
-    janela = Desktop(backend="win32").window(
-        title_re=f".*{titulo}.*"
-    )
+    hwnd = encontrar_janela_por_titulo(titulo)
 
-    if not janela.exists(timeout=5):
+    if not hwnd:
         print("Janela de Licenças não encontrada.")
         return
 
-    print(f"Janela encontrada: {janela.window_text()}")
-    print("\nCONTROLES DA JANELA")
-    print("-" * 70)
+    print("\nObtendo licenças...")
 
-    for indice, controle in enumerate(janela.descendants()):
-        try:
-            classe = controle.class_name()
-            texto = controle.window_text().strip()
-            rect = controle.rectangle()
+    win32gui.SetForegroundWindow(hwnd)
+    time.sleep(0.5)
 
-            print(
-                f"[{indice}] "
-                f"Classe={classe!r} | "
-                f"Texto={texto!r} | "
-                f"Handle={controle.handle} | "
-                f"Rect=({rect.left}, {rect.top}, "
-                f"{rect.right}, {rect.bottom})"
-            )
+    # Seleciona a grade
+    pyautogui.click(800, 460)
+    time.sleep(0.3)
 
-        except Exception as erro:
-            print(f"[{indice}] Erro ao ler controle: {erro}")
+    licencas = []
+    anterior = None
 
+    for tentativa in range(1, limite_tentativas + 1):
+        pyperclip.copy("")
+        time.sleep(0.1)
 
+        pyautogui.hotkey("ctrl", "c")
+        time.sleep(0.5)
+
+        atual = pyperclip.paste()
+
+        if not atual.strip():
+            print("Nenhum texto foi copiado.")
+            break
+
+        # Encerra quando a cópia se repetir
+        if anterior is not None and atual == anterior:
+            print("Fim da leitura: conteúdo repetido.")
+            break
+
+        licencas.append(atual.strip())
+        anterior = atual
+
+        pyautogui.press("down")
+        time.sleep(0.3)
+
+    print("\n" + "=" * 70)
+    print("LICENÇAS ENCONTRADAS")
+    print("=" * 70)
+
+    for indice, licenca in enumerate(licencas, start=1):
+        print(f"\nLicença {indice}")
+        print("-" * 40)
+        print(licenca)
+
+    print(f"\nTotal de registros: {len(licencas)}")
+
+        
 # ============================================================
 # PROGRAMA PRINCIPAL
 # ============================================================
