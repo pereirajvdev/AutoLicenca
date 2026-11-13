@@ -5,11 +5,17 @@ from pathlib import Path
 import pyautogui
 import pyperclip
 import win32gui
+import ctypes
 
+from ctypes import wintypes
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 from datetime import datetime
+
+
+from pywinauto import Desktop
+from functools import wraps
 
 
 # ============================================================
@@ -17,9 +23,14 @@ from datetime import datetime
 # ============================================================
 
 TITULO_MENU = "Menu: Arquivos / Cadastro de Funcionários"
+TITULO_LICENCAS = "Licenças / Afastamentos / Exames"
+TITULO_PESQUISANDO = "Pesquisando dados dos funcionários"
 
-X_INICIAL = 583
-Y_INICIAL = 841
+X_LUPA = 583
+Y_LUPA = 841
+
+X_LUPA_LICENCA = 629
+Y_LUPA_LICENCA = 877
 
 X_LICENCAS = 667
 Y_LICENCAS = 495
@@ -31,83 +42,235 @@ INTERVALO = 0.3
 INTERVALO_VERIFICACAO = 0.5
 
 
-# ============================================================
-# IDENTIFICAÇÃO DE JANELAS
-# ============================================================
+TEMPO_LIMITE = 60
+INTERVALO_VERIFICACAO = 1
 
-def encontrar_janela_por_titulo(titulo_procurado):
-    """
-    Retorna o identificador da primeira janela visível
-    cujo título contenha o texto procurado.
-    """
-    hwnd_encontrado = None
-    titulo_procurado = titulo_procurado.casefold()
+# ======================================================================
+# DESEMPENHO (--perf)
+# ======================================================================
+PERF_ATIVO = False
+_TEMPOS = {}
 
-    def callback(hwnd, _):
-        nonlocal hwnd_encontrado
 
-        try:
-            titulo = win32gui.GetWindowText(hwnd).strip()
+def _registrar_tempo(nome, duracao):
+    registro = _TEMPOS.setdefault(nome, [0, 0.0])
+    registro[0] += 1
+    registro[1] += duracao
 
-            if (
-                win32gui.IsWindowVisible(hwnd)
-                and titulo_procurado in titulo.casefold()
-            ):
-                hwnd_encontrado = hwnd
-                return False
 
-        except Exception:
-            pass
+class _SemMedicao:
+    """Context manager nulo, compartilhado: custo praticamente zero com --perf desligado."""
+    __slots__ = ()
 
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _Medicao:
+    __slots__ = ("nome", "inicio")
+
+    def __init__(self, nome):
+        self.nome = nome
+        self.inicio = 0.0
+
+    def __enter__(self):
+        self.inicio = time.perf_counter()
+        return self
+
+    def __exit__(self, *_exc):
+        _registrar_tempo(self.nome, time.perf_counter() - self.inicio)
+        return False
+
+
+_SEM_MEDICAO = _SemMedicao()
+
+
+def medir(nome):
+    """Mede o tempo de um bloco (`with medir(...)`). Sem efeito se --perf estiver desligado."""
+    return _Medicao(nome) if PERF_ATIVO else _SEM_MEDICAO
+
+
+def cronometrar(nome=None):
+    """Decorator que mede o tempo total de uma função (só com --perf)."""
+    def decorador(func):
+        rotulo = nome or func.__name__
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if not PERF_ATIVO:
+                return func(*args, **kwargs)
+
+            inicio = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                _registrar_tempo(rotulo, time.perf_counter() - inicio)
+
+        return wrapper
+    return decorador
+
+
+def imprimir_relatorio_tempos():
+    if not PERF_ATIVO or not _TEMPOS:
+        return
+
+    print("\n" + "=" * 66)
+    print(" RELATÓRIO DE DESEMPENHO (--perf)")
+    print(" Obs.: tempos aninhados se sobrepõem; não some as linhas.")
+    print("=" * 66)
+    print(f"{'Etapa':<42}{'Chamadas':>9}{'Total (s)':>11}{'Média (s)':>11}")
+
+    for nome, (chamadas, total) in sorted(
+        _TEMPOS.items(), key=lambda item: item[1][1], reverse=True
+    ):
+        media = total / chamadas if chamadas else 0.0
+        print(f"{nome:<42}{chamadas:>9}{total:>11.2f}{media:>11.3f}")
+
+    print("=" * 66)
+
+
+def _banner(texto):
+    """Imprime o cabeçalho padrão de seção (linha em branco + moldura)."""
+    print()
+    print("=" * 80)
+    print(texto)
+    print("=" * 80)
+
+# ======================================================================
+# WIN32 (ctypes): enumeração rápida de janelas
+# ======================================================================
+_user32 = ctypes.windll.user32
+
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+_user32.EnumWindows.argtypes = [_WNDENUMPROC, wintypes.LPARAM]
+_user32.EnumWindows.restype = wintypes.BOOL
+_user32.IsWindowVisible.argtypes = [wintypes.HWND]
+_user32.IsWindowVisible.restype = wintypes.BOOL
+_user32.IsHungAppWindow.argtypes = [wintypes.HWND]
+_user32.IsHungAppWindow.restype = wintypes.BOOL
+_user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_user32.GetWindowTextLengthW.restype = ctypes.c_int
+_user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.GetWindowTextW.restype = ctypes.c_int
+
+# Instância única de Desktop, usada só para criar o wrapper da janela escolhida.
+_DESKTOP = Desktop(backend="win32")
+
+_AVISOS_TRAVADA = set()
+
+
+def _listar_janelas_visiveis():
+    """Enumera janelas de nível superior visíveis: [(hwnd, titulo), ...]."""
+    resultado = []
+
+    def callback(hwnd, _lparam):
+        if _user32.IsWindowVisible(hwnd):
+            tamanho = _user32.GetWindowTextLengthW(hwnd)
+            if tamanho:
+                buffer = ctypes.create_unicode_buffer(tamanho + 1)
+                _user32.GetWindowTextW(hwnd, buffer, tamanho + 1)
+                resultado.append((hwnd, buffer.value))
         return True
 
-    win32gui.EnumWindows(callback, None)
+    proc = _WNDENUMPROC(callback)
+    _user32.EnumWindows(proc, 0)
+    return resultado
 
-    return hwnd_encontrado
 
-
-def aguardar_estado_menu(timeout=30):
+def _buscar_janela(titulos):
     """
-    Aguarda até que o Menu esteja aberto.
+    Faz UMA enumeração e retorna (hwnd, titulo_real) da primeira janela
+    válida, respeitando a ordem dos títulos informados.
+    Comparação: texto idêntico (sem diferenciar maiúsculas/minúsculas).
+    Janelas travadas são ignoradas.
     """
-    limite = time.time() + timeout
+    candidatas = {}
 
-    while time.time() < limite:
-        if encontrar_janela_por_titulo(TITULO_MENU) is not None:
-            return True
+    for hwnd, texto in _listar_janelas_visiveis():
+        texto = texto.strip()
+        candidatas.setdefault(texto.casefold(), []).append((hwnd, texto))
 
-        time.sleep(.1)
+    for titulo in titulos:
+        for hwnd, texto in candidatas.get(titulo.strip().casefold(), []):
+            if _user32.IsHungAppWindow(hwnd):
+                if hwnd not in _AVISOS_TRAVADA:
+                    _AVISOS_TRAVADA.add(hwnd)
+                    print(f"[AGUARDANDO] Janela sem resposta: {texto}")
+                continue
 
-    return False
+            return hwnd, texto
+
+    return None
 
 
-def ativar_janela(titulo, timeout=15):
+def _criar_wrapper(hwnd):
+    with medir("criar wrapper pywinauto"):
+        return _DESKTOP.window(handle=hwnd).wrapper_object()
+
+
+@cronometrar()
+def localizar_janela(titulo_esperado):
+    """Verificação única (sem espera). Retorna wrapper ou None."""
+    achado = _buscar_janela([titulo_esperado])
+
+    if achado is None:
+        return None
+
+    hwnd, titulo = achado
+    print(f"[OK] Janela identificada: {titulo}")
+    return _criar_wrapper(hwnd)
+
+
+@cronometrar()
+def aguardar_janela(*titulos_esperados, time_limit=TEMPO_LIMITE):
     """
-    Localiza e ativa a janela pelo título.
+    Aguarda até que uma janela com um dos títulos apareça.
+    Retorna o wrapper da primeira janela válida (seguindo a ordem dos
+    títulos) ou None se o tempo limite estourar.
     """
-    print(f"Esperando janela: {titulo}")
+    print(
+        f"[INFO] Aguardando uma das janelas: "
+        f"{', '.join(titulos_esperados)}"
+    )
 
-    limite = time.time() + timeout
+    limite = time.monotonic() + time_limit
 
-    while time.time() < limite:
-        hwnd = encontrar_janela_por_titulo(titulo)
+    while True:
+        with medir("enumerar janelas"):
+            achado = _buscar_janela(titulos_esperados)
 
-        if hwnd:
-            try:
-                win32gui.SetForegroundWindow(hwnd)
-                time.sleep(INTERVALO)
+        if achado is not None:
+            hwnd, titulo = achado
+            print(f"[OK] Janela identificada: {titulo}")
+            return _criar_wrapper(hwnd)
 
-                print(f"Janela ativa: {win32gui.GetWindowText(hwnd)}")
-                return True
+        if time.monotonic() >= limite:
+            break
 
-            except Exception as erro:
-                print(f"Não foi possível ativar a janela: {erro}")
-                return False
+        time.sleep(INTERVALO_VERIFICACAO)
 
-        time.sleep(0.2)
+    print(
+        f"[INFO] Nenhuma janela válida apareceu em "
+        f"{time_limit} segundos: "
+        f"{', '.join(titulos_esperados)}"
+    )
 
-    print(f"Janela não encontrada: {titulo}")
-    return False
+    return None
+
+
+def exigir_janela(*titulos_esperados, time_limit=TEMPO_LIMITE):
+    janela = aguardar_janela(*titulos_esperados, time_limit=time_limit)
+
+    if janela is None:
+        raise RuntimeError(
+            "Janela não encontrada: " + ", ".join(titulos_esperados)
+        )
+
+    return janela
 
 
 # ============================================================
@@ -154,7 +317,7 @@ def ler_servidores(caminho_planilha):
 # PESQUISA DO SERVIDOR
 # ============================================================
 
-def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
+def primeira_execucao(nome, numero_linha=None, caminho_planilha=None):
     print(f"\nPesquisando servidor: {nome}")
     """
     Executa a sequência inicial:
@@ -170,20 +333,29 @@ def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
 
     print("Aguardando o Menu...")
 
-    if not aguardar_estado_menu():
-        print("Menu não encontrado. Servidor ignorado.")
-        return False
+    janela = aguardar_janela(TITULO_MENU)
+    janela.set_focus()
 
-    print(f"Janela encontrada: {TITULO_MENU}")
+    print("Clicando na Lupa")
+    pyautogui.click(X_LUPA, Y_LUPA)
+    pyautogui.click(X_LUPA, Y_LUPA)
 
-    if not ativar_janela(TITULO_MENU):
-        return False
+    acao_pesquisar(nome, numero_linha, caminho_planilha)
 
-    print("Clicando na posição inicial...")
-    pyautogui.click(X_INICIAL, Y_INICIAL)
-    pyautogui.click(X_INICIAL, Y_INICIAL)
-    time.sleep(INTERVALO)
+    janela = aguardar_janela(TITULO_MENU)
+    janela.set_focus()
+    
+    print("Abrindo janela de Licenças...")
+    pyautogui.click(X_LICENCAS, Y_LICENCAS)
+    pyautogui.click(X_LICENCAS, Y_LICENCAS)
 
+    operar_licencas(nome, numero_linha, caminho_planilha)
+
+def acao_pesquisar(nome, numero_linha=None, caminho_planilha=None):
+    
+    janela = aguardar_janela(TITULO_PESQUISANDO)
+    janela.set_focus()
+    
     print(f"Pesquisando servidor: {nome}")
     pyperclip.copy(nome)
     pyautogui.hotkey("ctrl", "v")
@@ -191,72 +363,64 @@ def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
 
     print("Pressionando primeiro Enter...")
     pyautogui.press("enter")
-    time.sleep(.05)
 
     print("Pressionando segundo Enter...")
     pyautogui.press("enter")
-    time.sleep(.5)
 
-    print("Abrindo janela de Licenças...")
-    pyautogui.click(X_LICENCAS, Y_LICENCAS)
-    pyautogui.click(X_LICENCAS, Y_LICENCAS)
-    time.sleep(.5)
+    return True
+
+def operar_licencas(nome, numero_linha=None, caminho_planilha=None):
+    # Opera a janela de licencas
+
+    janela = aguardar_janela(TITULO_LICENCAS)
+    janela.set_focus()
 
     print("Executando próximo clique...")
     pyautogui.click(X_PROXIMA_ACAO, Y_PROXIMA_ACAO)
     pyautogui.click(X_PROXIMA_ACAO, Y_PROXIMA_ACAO)
     time.sleep(.05)
 
-    print("Clique para abrir Licenças realizado.")
+    print("Clique para abrir Grade Licenças realizado.")
 
-    obter_licencas(nome, caminho_planilha)
-    
-    time.sleep(.5)
-
-    print(f"Sequência concluída para: {nome}")
-    print(f"Voltando ao menu")
-    pyautogui.hotkey("esc")
-    
-    time.sleep(.5)
+    obter_licencas(nome, caminho_planilha) 
 
     return True
 
+def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
+    # clica na lupa da janela de licencas
+    pyautogui.click(X_LUPA_LICENCA, Y_LUPA_LICENCA)
+    pyautogui.click(X_LUPA_LICENCA, Y_LUPA_LICENCA)
+
+    if not acao_pesquisar(nome, numero_linha, caminho_planilha):
+        return False
+    
+    if not operar_licencas(nome, numero_linha, caminho_planilha):
+        return False
+
+    print(f"Sequência concluída para: {nome}")
+
+    return True
 
 def obter_licencas(nome_servidor, caminho_saida):
     """
     Lê os registros da grade e acrescenta as licenças
     ao Excel consolidado.
     """
-    titulo = "Licenças / Afastamentos / Exames"
-    limite_tentativas = 100
-
-    hwnd = encontrar_janela_por_titulo(titulo)
-
-    if not hwnd:
-        print("Janela de Licenças não encontrada. (1/2)")
-        time.sleep(.5)
-        hwnd = encontrar_janela_por_titulo(titulo)
-        if not hwnd:
-            print("Janela de Licenças não encontrada. (2/2)")
-            return
 
     print(f"\nObtendo licenças de: {nome_servidor}")
 
-    win32gui.SetForegroundWindow(hwnd)
-    time.sleep(0.5)
-
     pyautogui.click(800, 460)
-    time.sleep(0.3)
+    time.sleep(0.05)
 
     registros = []
     anterior = None
+    
+    limite_tentativas = 100
 
     for tentativa in range(1, limite_tentativas + 1):
         pyperclip.copy("")
-        time.sleep(0.1)
 
         pyautogui.hotkey("ctrl", "c")
-        time.sleep(0.05)
 
         atual = pyperclip.paste()
 
@@ -274,7 +438,6 @@ def obter_licencas(nome_servidor, caminho_saida):
         print(f"Registro {len(registros)} capturado.")
 
         pyautogui.press("down")
-        time.sleep(0.01)
 
     if not registros:
         print("Nenhuma licença foi encontrada.")
@@ -498,21 +661,24 @@ def main():
     # Cria um único arquivo para todo o processamento.
     criar_planilha_licencas(args.planilha)
 
+    i = 0
     for indice, nome in enumerate(servidores, start=1):
-        try:
+        if i == 0:
+            primeira_execucao(
+                nome,
+                indice,
+                caminho_saida,
+            )
+        else:
             pesquisar_servidor(
                 nome,
                 indice,
                 caminho_saida,
             )
-            time.sleep(0.5)
+        
+        i=+1
 
-        except KeyboardInterrupt:
-            print("\nProcessamento interrompido pelo usuário.")
-            break
-
-        except Exception as erro:
-            print(f"Erro ao processar {nome}: {erro}")
+        
 
 
 if __name__ == "__main__":
