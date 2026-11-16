@@ -1,5 +1,6 @@
 import argparse
 import time
+import re
 from pathlib import Path
 
 import pyautogui
@@ -38,12 +39,13 @@ Y_LICENCAS = 495
 X_PROXIMA_ACAO = 898
 Y_PROXIMA_ACAO = 419
 
+X_MATRICULA = 658
+Y_MATRICULA = 628
+
+
 INTERVALO = 0.3
 INTERVALO_VERIFICACAO = 0.5
-
-
 TEMPO_LIMITE = 60
-INTERVALO_VERIFICACAO = 1
 
 # ======================================================================
 # DESEMPENHO (--perf)
@@ -273,14 +275,81 @@ def exigir_janela(*titulos_esperados, time_limit=TEMPO_LIMITE):
     return janela
 
 
+def procurar_controle(janela, titulo=None, classe=None, controles=None):
+    """
+    Localiza o primeiro descendente pelo título e/ou classe.
+    """
+    if controles is None:
+        controles = janela.descendants()
+
+    for i, controle in enumerate(controles):
+        try:
+            texto_ok = (
+                titulo is None
+                or controle.window_text() == titulo
+            )
+
+            classe_ok = (
+                classe is None
+                or controle.class_name() == classe
+            )
+
+            if texto_ok and classe_ok:
+                return controle
+
+        except Exception as e:
+            print(f"[{i}] Erro: {e}")
+
+    print(
+        f"[ERRO] Controle não encontrado: "
+        f"titulo={titulo!r}, classe={classe!r}"
+    )
+
+    return None
+
+
 # ============================================================
 # LEITURA DA PLANILHA
 # ============================================================
 
-def ler_servidores(caminho_planilha):
+def normalizar_matricula(valor):
     """
-    Lê exclusivamente os nomes dos servidores na coluna B.
-    Ignora completamente a coluna A (matrículas).
+    Normaliza a matrícula para seis dígitos, completando com zeros à esquerda.
+
+    Exemplos:
+        2062    -> 002062
+        31205   -> 031205
+        002062  -> 002062
+        2062.0  -> 002062
+    """
+    if valor is None:
+        return None
+
+    texto = str(valor).strip()
+
+    if not texto:
+        return None
+
+    # Remove o .0 de valores numéricos lidos como float.
+    if texto.endswith(".0") and texto[:-2].isdigit():
+        texto = texto[:-2]
+
+    # Mantém somente os números.
+    numeros = re.sub(r"\D", "", texto)
+
+    if not numeros:
+        return None
+
+    return numeros.zfill(6)
+
+
+def ler_servidores(caminho_planilha, usar_matriculas=False):
+    """
+    Lê os nomes dos servidores na coluna B e, opcionalmente,
+    as matrículas na coluna A.
+
+    Retorna uma lista de tuplas:
+        (nome, matricula)
     """
     workbook = load_workbook(
         caminho_planilha,
@@ -292,20 +361,36 @@ def ler_servidores(caminho_planilha):
         planilha = workbook.active
         servidores = []
 
-        for linha in planilha.iter_rows(
-            min_col=2,
-            max_col=2,
-            values_only=True,
+        for numero_linha, linha in enumerate(
+            planilha.iter_rows(
+                min_col=1,
+                max_col=2,
+                values_only=True,
+            ),
+            start=1,
         ):
-            valor = linha[0]
+            valor_matricula, valor_nome = linha
 
-            if valor is None:
+            if valor_nome is None:
                 continue
 
-            nome = str(valor).strip()
+            nome = str(valor_nome).strip()
 
-            if nome:
-                servidores.append(nome)
+            if not nome:
+                continue
+
+            matricula = None
+
+            if usar_matriculas:
+                matricula = normalizar_matricula(valor_matricula)
+
+                if matricula is None:
+                    raise ValueError(
+                        f"Matrícula inválida na linha {numero_linha}: "
+                        f"{valor_matricula!r}"
+                    )
+
+            servidores.append((nome, matricula))
 
         return servidores
 
@@ -317,19 +402,19 @@ def ler_servidores(caminho_planilha):
 # PESQUISA DO SERVIDOR
 # ============================================================
 
-def primeira_execucao(nome, numero_linha=None, caminho_planilha=None):
+def primeira_execucao(
+    nome,
+    numero_linha=None,
+    caminho_planilha=None,
+    matricula=None,
+):
     print(f"\nPesquisando servidor: {nome}")
-    """
-    Executa a sequência inicial:
-    1. Aguarda o Menu.
-    2. Ativa a janela.
-    3. Clica na posição inicial.
-    4. Cola o nome.
-    5. Pressiona Enter duas vezes.
-    """
 
     print(f"\n{'=' * 50}")
     print(f"Linha {numero_linha}: {nome}")
+
+    if matricula is not None:
+        print(f"Matrícula: {matricula}")
 
     print("Aguardando o Menu...")
 
@@ -340,24 +425,56 @@ def primeira_execucao(nome, numero_linha=None, caminho_planilha=None):
     pyautogui.click(X_LUPA, Y_LUPA)
     pyautogui.click(X_LUPA, Y_LUPA)
 
-    acao_pesquisar(nome, numero_linha, caminho_planilha)
+    acao_pesquisar(
+        nome,
+        numero_linha,
+        caminho_planilha,
+        matricula,
+    )
 
     janela = aguardar_janela(TITULO_MENU)
     janela.set_focus()
-    
+
     print("Abrindo janela de Licenças...")
     pyautogui.click(X_LICENCAS, Y_LICENCAS)
     pyautogui.click(X_LICENCAS, Y_LICENCAS)
 
     operar_licencas(nome, numero_linha, caminho_planilha)
 
-def acao_pesquisar(nome, numero_linha=None, caminho_planilha=None):
-    
+
+def acao_pesquisar(
+    nome,
+    numero_linha=None,
+    caminho_planilha=None,
+    matricula=None,
+):
     janela = aguardar_janela(TITULO_PESQUISANDO)
     janela.set_focus()
-    
-    print(f"Pesquisando servidor: {nome}")
-    pyperclip.copy(nome)
+
+    if matricula is not None:
+        print(f"Pesquisando pela matrícula: {matricula}")
+
+        radio_matricula = procurar_controle(
+            janela,
+            titulo="&Matrícula",
+            classe="TRadioButton"
+        )
+        radio_matricula.set_focus()
+        radio_matricula.click()
+
+        campo = procurar_controle(
+            janela,
+            classe="TEdit"
+        )
+        campo.set_focus()
+
+        pyperclip.copy(matricula)
+
+    else:
+        print(f"Pesquisando pelo nome: {nome}")
+
+        pyperclip.copy(nome)
+
     pyautogui.hotkey("ctrl", "v")
     time.sleep(.05)
 
@@ -368,6 +485,7 @@ def acao_pesquisar(nome, numero_linha=None, caminho_planilha=None):
     pyautogui.press("enter")
 
     return True
+
 
 def operar_licencas(nome, numero_linha=None, caminho_planilha=None):
     # Opera a janela de licencas
@@ -386,20 +504,31 @@ def operar_licencas(nome, numero_linha=None, caminho_planilha=None):
 
     return True
 
-def pesquisar_servidor(nome, numero_linha=None, caminho_planilha=None):
-    # clica na lupa da janela de licencas
+
+def pesquisar_servidor(
+    nome,
+    numero_linha=None,
+    caminho_planilha=None,
+    matricula=None,
+):
     pyautogui.click(X_LUPA_LICENCA, Y_LUPA_LICENCA)
     pyautogui.click(X_LUPA_LICENCA, Y_LUPA_LICENCA)
 
-    if not acao_pesquisar(nome, numero_linha, caminho_planilha):
+    if not acao_pesquisar(
+        nome,
+        numero_linha,
+        caminho_planilha,
+        matricula,
+    ):
         return False
-    
+
     if not operar_licencas(nome, numero_linha, caminho_planilha):
         return False
 
     print(f"Sequência concluída para: {nome}")
 
     return True
+
 
 def obter_licencas(nome_servidor, caminho_saida):
     """
@@ -551,8 +680,6 @@ def criar_planilha_licencas(caminho_planilha):
 
     return caminho_saida
 
-import re
-
 
 def interpretar_licenca(texto):
     """
@@ -627,13 +754,19 @@ def interpretar_licenca(texto):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Executa a pesquisa inicial dos servidores de uma planilha."
+        description="Executa a pesquisa dos servidores de uma planilha."
     )
 
     parser.add_argument(
         "planilha",
         type=Path,
         help="Caminho da planilha Excel.",
+    )
+
+    parser.add_argument(
+        "--matriculas",
+        action="store_true",
+        help="Utiliza as matrículas da coluna A para pesquisar os servidores.",
     )
 
     args = parser.parse_args()
@@ -643,42 +776,49 @@ def main():
         return
 
     try:
-        servidores = ler_servidores(args.planilha)
+        servidores = ler_servidores(
+            args.planilha,
+            usar_matriculas=args.matriculas,
+        )
+
     except Exception as erro:
         print(f"Erro ao ler a planilha: {erro}")
         return
 
     if not servidores:
-        print("Nenhum nome encontrado na coluna B.")
+        print("Nenhum servidor encontrado na planilha.")
         return
 
     print(f"Total de servidores encontrados: {len(servidores)}")
+
+    if args.matriculas:
+        print("Modo de pesquisa: MATRÍCULA")
+    else:
+        print("Modo de pesquisa: NOME")
 
     caminho_saida = (
         args.planilha.resolve().parent / "Licencas.xlsx"
     )
 
-    # Cria um único arquivo para todo o processamento.
     criar_planilha_licencas(args.planilha)
 
-    i = 0
-    for indice, nome in enumerate(servidores, start=1):
-        if i == 0:
+    for indice, (nome, matricula) in enumerate(servidores, start=1):
+
+        if indice == 1:
             primeira_execucao(
                 nome,
                 indice,
                 caminho_saida,
+                matricula,
             )
+
         else:
             pesquisar_servidor(
                 nome,
                 indice,
                 caminho_saida,
+                matricula,
             )
-        
-        i=+1
-
-        
 
 
 if __name__ == "__main__":
